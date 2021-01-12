@@ -13,12 +13,15 @@
  */
 metadata {
 	definition (name: "Aeon Outlet", namespace: "smartthings", author: "SmartThings", runLocally: true, minHubCoreVersion: '000.017.0012', executeCommandsLocally: false) {
-		capability "Energy Meter"
+		capability "Voltage Measurement"
+        capability "Energy Meter"
+        capability "Power Meter"
 		capability "Actuator"
 		capability "Switch"
 		capability "Configuration"
 		capability "Refresh"
 		capability "Sensor"
+     
 
 		command "reset"
 
@@ -29,9 +32,14 @@ metadata {
 	simulator {
 		status "on":  "command: 2003, payload: FF"
 		status "off": "command: 2003, payload: 00"
-
+        
+		for (int i = 0; i <= 10000; i += 1000) {
+			status "power  ${i} W": new physicalgraph.zwave.Zwave().meterV3.meterReport(
+					scaledMeterValue: i, precision: 3, meterType: 4, scale: 2, size: 4).incomingMessage()
+		}
+        
 		for (int i = 0; i <= 100; i += 10) {
-			status "energy  ${i} kWh": new physicalgraph.zwave.Zwave().meterV2.meterReport(
+			status "energy  ${i} kWh": new physicalgraph.zwave.Zwave().meterV3.meterReport(
 				scaledMeterValue: i, precision: 3, meterType: 0, scale: 0, size: 4).incomingMessage()
 		}
 
@@ -52,41 +60,91 @@ metadata {
 		valueTile("energy", "device.energy", decoration: "flat", width: 2, height: 2) {
 			state "default", label:'${currentValue} kWh'
 		}
+        
+        valueTile("voltage", "device.voltage", decoration: "flat", width: 2, height: 2) {
+			state "default", label:'${currentValue} V'
+		}
+        
+        valueTile("power", "device.power", decoration: "flat", width: 2, height: 2) {
+			state "default", label:'${currentValue} W'
+		}
+        
 		standardTile("reset", "device.energy", inactiveLabel: false, decoration: "flat", width: 2, height: 2) {
 			state "default", label:'reset kWh', action:"reset"
 		}
 		standardTile("configure", "device.power", inactiveLabel: false, decoration: "flat", width: 2, height: 2) {
 			state "configure", label:'', action:"configuration.configure", icon:"st.secondary.configure"
-		}
-		standardTile("refresh", "device.power", inactiveLabel: false, decoration: "flat", width: 2, height: 2) {
-			state "default", label:'', action:"refresh.refresh", icon:"st.secondary.refresh"
-		}
+		}  
 
 		main "switch"
-		details(["switch","energy","reset","refresh","configure"])
+		details(["switch","energy","voltage","power","reset","refresh","configure"])
 	}
 }
 
 def parse(String description) {
 	def result = null
-	def cmd = zwave.parse(description, [0x20: 1, 0x32: 2])
-	if (cmd) {
+	//def cmd = zwave.parse(description, [0x20: 1, 0x32: 2])
+	def cmd = zwave.parse(description)
+    if (cmd) {
 		log.debug cmd
 		result = createEvent(zwaveEvent(cmd))
 	}
 	return result
 }
 
-def zwaveEvent(physicalgraph.zwave.commands.meterv2.MeterReport cmd) {
-	if (cmd.scale == 0) {
-		[name: "energy", value: cmd.scaledMeterValue, unit: "kWh"]
-	} else if (cmd.scale == 1) {
-		[name: "energy", value: cmd.scaledMeterValue, unit: "kVAh"]
-	}
-	else {
-		[name: "power", value: Math.round(cmd.scaledMeterValue), unit: "W"]
-	}
+
+def zwaveEvent(physicalgraph.zwave.commands.meterv3.MeterReport cmd) {
+    def meterTypes = ["Unknown", "Electric", "Gas", "Water"]
+    def electricNames = ["energy", "energy", "power", "count",  "voltage", "current", "powerFactor",  "unknown"]
+    def electricUnits = ["kWh",    "kVAh",   "W",     "pulses", "V",       "A",       "Power Factor", ""]
+
+    //NOTE ScaledPreviousMeterValue does not always contain a value
+    def previousValue = cmd.scaledPreviousMeterValue ?: 0
+
+    def map = [ name: electricNames[cmd.scale], unit: electricUnits[cmd.scale], displayed: state.display]
+    switch(cmd.scale) {
+        case 0: //kWh
+	    previousValue = device.currentValue("energy") ?: cmd.scaledPreviousMeterValue ?: 0
+            map.value = cmd.scaledMeterValue
+            break;
+        case 1: //kVAh
+            map.value = cmd.scaledMeterValue
+            break;
+        case 2: //Watts
+            previousValue = device.currentValue("power") ?: cmd.scaledPreviousMeterValue ?: 0
+            map.value = Math.round(cmd.scaledMeterValue)
+            break;
+        case 3: //pulses
+            map.value = Math.round(cmd.scaledMeterValue)
+            break;
+        case 4: //Volts
+            previousValue = device.currentValue("voltage") ?: cmd.scaledPreviousMeterValue ?: 0
+            map.value = cmd.scaledMeterValue
+            break;
+        case 5: //Amps
+            previousValue = device.currentValue("current") ?: cmd.scaledPreviousMeterValue ?: 0
+            map.value = cmd.scaledMeterValue
+            break;
+        case 6: //Power Factor
+        case 7: //Unknown
+            map.value = cmd.scaledMeterValue
+            break;
+        default:
+            break;
+    }
+    //Check if the value has changed by more than 5%, if so mark as a stateChange
+    //map.isStateChange = ((cmd.scaledMeterValue - previousValue).abs() > (cmd.scaledMeterValue * 0.05))
+	log.debug("${map.name} ${map.unit} ${map.value}")
+    createEvent(map)
 }
+
+
+
+
+
+
+
+
 
 def zwaveEvent(physicalgraph.zwave.commands.basicv1.BasicReport cmd)
 {
@@ -122,7 +180,13 @@ def off() {
 }
 
 def refresh() {
-	zwave.switchBinaryV1.switchBinaryGet().format()
+	delayBetween([
+		zwave.switchBinaryV1.switchBinaryGet().format(),
+    	zwave.meterV3.meterGet(scale: 0),
+        zwave.meterV3.meterGet(scale: 2),
+		zwave.meterV3.meterGet(scale: 4),
+        zwave.meterV3.meterGet(scale: 5)
+            ])
 }
 
 def reset() {
@@ -134,8 +198,8 @@ def reset() {
 
 def configure() {
 	delayBetween([
-		zwave.configurationV1.configurationSet(parameterNumber: 101, size: 4, scaledConfigurationValue: 8).format(),   // energy in kWh
-		zwave.configurationV1.configurationSet(parameterNumber: 111, size: 4, scaledConfigurationValue: 300).format(), // every 5 min
+		zwave.configurationV1.configurationSet(parameterNumber: 101, size: 4, scaledConfigurationValue: 15).format(),   // kWh, V, A, W
+		zwave.configurationV1.configurationSet(parameterNumber: 111, size: 4, scaledConfigurationValue: 1).format(), // every 1 second 
 		zwave.configurationV1.configurationSet(parameterNumber: 102, size: 4, scaledConfigurationValue: 0).format(),
 		zwave.configurationV1.configurationSet(parameterNumber: 103, size: 4, scaledConfigurationValue: 0).format()
 	])
