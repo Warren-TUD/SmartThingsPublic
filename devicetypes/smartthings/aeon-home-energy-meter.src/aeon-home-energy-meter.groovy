@@ -3,7 +3,7 @@
  *
  *  Author: WarrenK-design
  *
- *  Date: 10/11/2020
+ *  Date: 12/01/2021
  * 	Description:
  *		This device handler is a modification on the Aeon Home Energy meter device handler which is also used by the Qubino meter. The device handler has been updated to support 
  *		Energy, Power and Voltage readings through an external REST API. The configuration paramater 40 has been updated for the device to report on a 1% change in power and the 
